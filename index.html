@@ -108,7 +108,8 @@ p.hint{color:var(--muted);margin:4px 0 12px;font-size:15px}
 .livecard{display:block;width:100%;text-align:left;border:1px solid var(--line);background:var(--surface);border-radius:20px;overflow:hidden;padding:0;box-shadow:var(--shadow);margin-bottom:10px}
 .lc-head{display:flex;align-items:center;gap:12px;padding:14px 16px}
 .lc-head b{display:block;font-size:17px}
-.lc-go{display:inline-flex;align-items:center;gap:4px;font-weight:700;color:var(--ink)}
+.lc-go{flex:none;gap:4px;padding:8px 12px 8px 16px;min-height:42px;box-shadow:none}
+.livecard{cursor:pointer}
 .lc-score{display:grid;grid-template-columns:1fr 8px 1fr}
 .lc-score div{font-family:var(--display);font-weight:800;font-size:46px;line-height:1;padding:10px 16px 12px;font-variant-numeric:tabular-nums}
 .lc-score .a{background:var(--a);color:var(--a-ink)}
@@ -183,6 +184,20 @@ input[type=range]{width:100%;accent-color:var(--b)}
 .bar{height:5px;border-radius:5px;background:var(--sunk);margin-top:7px;overflow:hidden}
 .bar i{display:block;height:100%;background:var(--ink);border-radius:5px}
 .dim .pct,.dim .name{color:var(--muted)}
+.tcard{background:var(--surface);border:1px solid var(--line);border-radius:16px;overflow:hidden;margin-bottom:12px;box-shadow:var(--shadow)}
+.tcard-head{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--sunk)}
+.tcard-head .input{min-height:40px;font-weight:700}
+.team .tname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fx{font-weight:500}.fx .fw{font-weight:800}.fx .fl{color:var(--muted)}
+.pct .pts{font-size:14px;color:var(--muted);margin-left:2px}
+.pager{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px}
+.pager span{font-size:14px;color:var(--muted);text-align:center}
+.pager .btn{gap:4px;white-space:nowrap}
+.hcol{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:none}
+.item .pos{min-width:24px;width:auto}
+.item .name .meta{font-size:13px}
+.stats{display:flex;flex-wrap:wrap;gap:1px 10px}
+.stats b{color:var(--ink);font-weight:700;font-variant-numeric:tabular-nums}
 .period{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:8px;margin-bottom:10px;box-shadow:var(--shadow);text-align:center}
 .period b{display:block;font-family:var(--display);font-size:22px;font-weight:800;line-height:1.1}
 .period .btn.icon{border:0;background:var(--sunk)}
@@ -333,7 +348,7 @@ function saveGame() {
   const { edit, ...doc } = G;
   persist('g_' + G.id, doc);
   const idx = S.games.findIndex(g => g.id === G.id);
-  const sum = { id: G.id, name: G.name, createdAt: G.createdAt, status: G.status, matches: G.matches.length, players: G.roster.length, score: { ...G.score } };
+  const sum = { id: G.id, name: G.name, createdAt: G.createdAt, status: G.status, matches: G.matches.length, players: G.roster.length, score: { ...G.score }, type: G.type || 'pelada' };
   if (idx >= 0) S.games[idx] = sum; else S.games.unshift(sum);
   saveMain();
 }
@@ -422,6 +437,7 @@ function startGame() {
   render();
 }
 function finishMatch(winner, mode) {
+  if (isT()) return finishTournamentMatch(winner);
   const n = G.cfg.teamSize, loser = winner === 'A' ? 'B' : 'A';
   const W = G.court[winner].slice(), L = G.court[loser].slice();
   const undo = { court: clone(G.court), queue: G.queue.slice(), score: { ...G.score }, winner, W, L, elo: {}, streak: clone(G.streak || {}) };
@@ -469,9 +485,10 @@ function undoLastMatch() {
   });
   G.matches.pop();
   G.court = u.court; G.queue = u.queue; G.streak = u.streak || {};
+  if (u.fx != null && G.fixtures) { G.fixtures[u.fx].done = false; G.fixtures[u.fx].mi = null; G.cur = u.cur; G.status = 'live'; gameTab = 'quadra'; }
   G.score = { ...u.score }; G.score[u.winner] = Math.max(0, G.score[u.winner] - 1);
   G.lastUndo = null;
-  saveGame(); render();
+  saveGame(); closeModal(); render();
   toast('Última partida desfeita. Placar voltou um ponto antes do fim.');
 }
 function addPoint(team) {
@@ -555,8 +572,231 @@ async function openGame(id) {
   const d = await loadDoc('g_' + id);
   if (!d) { toast('Não foi possível abrir essa pelada.'); return; }
   G = d; G.inactive = G.inactive || []; G.matches = G.matches || [];
-  view = 'game'; gameTab = G.status === 'live' ? 'quadra' : 'ranking';
+  view = 'game'; gameTab = G.status === 'live' ? 'quadra' : 'ranking'; histPage = 0;
   render();
+}
+
+/* ---------- torneio (times fixos, todos contra todos) ---------- */
+const isT = () => !!(G && G.type === 'torneio');
+function curFixture() { return isT() && G.cur >= 0 ? G.fixtures[G.cur] : null; }
+function tName(s) {
+  const f = curFixture();
+  if (!f) return TEAM[s];
+  return G.teams[s === 'A' ? f.a : f.b].name;
+}
+const mLabel = (m, s) => (m.ta != null && G && G.teams) ? G.teams[s === 'A' ? m.ta : m.tb].name : (s === 'A' ? 'Amarelo' : 'Azul');
+// Tabela pelo método do círculo: cada rodada tem todos os times jogando uma vez (ou folgando, se for ímpar)
+function roundRobin(n, twice) {
+  const ids = [...Array(n).keys()];
+  if (n % 2) ids.push(-1);
+  const m = ids.length, rounds = [];
+  let arr = ids.slice();
+  for (let r = 0; r < m - 1; r++) {
+    const round = [];
+    for (let i = 0; i < m / 2; i++) {
+      const a = arr[i], b = arr[m - 1 - i];
+      if (a >= 0 && b >= 0) round.push(r % 2 ? { a: b, b: a } : { a, b });
+    }
+    rounds.push(round);
+    arr = [arr[0], arr[m - 1], ...arr.slice(1, m - 1)];
+  }
+  let fx = rounds.flat();
+  if (twice) fx = fx.concat(rounds.flat().map(f => ({ a: f.b, b: f.a })));
+  return fx.map(f => ({ a: f.a, b: f.b, done: false, mi: null }));
+}
+// Divide em k times equilibrando a média de elo, escolhendo ao acaso entre as melhores divisões
+function drawFixedTeams(ids, k) {
+  const tries = [];
+  for (let t = 0; t < 600; t++) {
+    const sh = shuffle(ids), teams = Array.from({ length: k }, () => []);
+    sh.forEach((id, i) => teams[i % k].push(id));
+    const avgs = teams.map(avgElo);
+    tries.push({ teams, spread: Math.max(...avgs) - Math.min(...avgs) });
+  }
+  tries.sort((a, b) => a.spread - b.spread);
+  return tries[Math.floor(Math.random() * Math.min(8, tries.length))].teams;
+}
+function newTournamentDraft() {
+  return { kind: 'torneio', name: '', nTeams: 3, teamSize: 4, maxPoints: 15, twice: false, selected: [], q: '', step: 'players', teams: [], firstPick: 'order', winMode: 'losers', balance: 70, streakLimit: 0, vary: false };
+}
+function makeTeams() {
+  const groups = drawFixedTeams(draft.selected, draft.nTeams);
+  const old = draft.teams;
+  draft.teams = groups.map((players, i) => ({ name: (old[i] && old[i].name) || 'Time ' + (i + 1), players }));
+  draft.step = 'teams';
+}
+function setCourtFromFixture() {
+  const f = curFixture();
+  G.court = f ? { A: G.teams[f.a].players.slice(), B: G.teams[f.b].players.slice() } : { A: [], B: [] };
+}
+function nextFixtures(k) {
+  const out = [];
+  G.fixtures.forEach((f, i) => { if (!f.done && i !== G.cur && out.length < k) out.push(i); });
+  return out;
+}
+function startTournament() {
+  const d = draft;
+  if (d.teams.some(t => !t.players.length)) { toast('Todo time precisa de pelo menos um jogador.'); return; }
+  const teams = d.teams.map((t, i) => ({ name: t.name.trim() || 'Time ' + (i + 1), players: t.players.slice() }));
+  const fixtures = roundRobin(teams.length, d.twice);
+  G = {
+    id: 'g' + uid(), type: 'torneio', name: d.name.trim() || 'Torneio de ' + fmtDate(Date.now()), createdAt: Date.now(), status: 'live',
+    cfg: { teamSize: Math.max(...teams.map(t => t.players.length)), maxPoints: d.maxPoints, winMode: 'losers', balance: 70, streakLimit: 0, vary: false, twice: d.twice },
+    roster: teams.flatMap(t => t.players), inactive: [], teams, fixtures, cur: 0, queue: [], court: { A: [], B: [] },
+    score: { A: 0, B: 0 }, matches: [], lastUndo: null, streak: {}, firstServe: Math.random() < 0.5 ? 'A' : 'B'
+  };
+  setCourtFromFixture();
+  saveMain(); saveGame();
+  draft = null; view = 'game'; gameTab = 'quadra'; histPage = 0;
+  render();
+}
+function finishTournamentMatch(winner) {
+  const loser = winner === 'A' ? 'B' : 'A';
+  const W = G.court[winner].slice(), L = G.court[loser].slice();
+  const f = curFixture();
+  const undo = { court: clone(G.court), queue: [], score: { ...G.score }, winner, W, L, elo: {}, streak: {}, fx: G.cur, cur: G.cur };
+  const exp = 1 / (1 + Math.pow(10, (avgElo(L) - avgElo(W)) / 400));
+  const delta = 24 * (1 - exp);
+  W.forEach(i => { if (S.players[i]) { const p = S.players[i]; p.elo += delta; p.j++; p.v++; undo.elo[i] = delta; } });
+  L.forEach(i => { if (S.players[i]) { const p = S.players[i]; p.elo -= delta; p.j++; p.d++; undo.elo[i] = -delta; } });
+  const winName = G.teams[winner === 'A' ? f.a : f.b].name;
+  G.matches.push({ A: G.court.A.slice(), B: G.court.B.slice(), sa: G.score.A, sb: G.score.B, w: winner, t: Date.now(), ta: f.a, tb: f.b });
+  f.done = true; f.mi = G.matches.length - 1;
+  G.score = { A: 0, B: 0 }; G.lastUndo = undo;
+  const next = G.fixtures.findIndex(x => !x.done);
+  if (next < 0) {
+    G.cur = -1; setCourtFromFixture(); G.status = 'done';
+    saveGame(); closeModal(); gameTab = 'tabela'; render(); openChampionModal();
+    return;
+  }
+  G.cur = next; setCourtFromFixture();
+  saveGame(); closeModal(); render();
+  toast(`${winName} venceu. Próximo jogo: ${tName('A')} x ${tName('B')}.`);
+}
+function standings(g) {
+  const st = g.teams.map((t, i) => ({ i, name: t.name, j: 0, v: 0, d: 0, pp: 0, pc: 0 }));
+  g.matches.forEach(m => {
+    if (m.ta == null) return;
+    const a = st[m.ta], b = st[m.tb];
+    a.j++; b.j++; a.pp += m.sa; a.pc += m.sb; b.pp += m.sb; b.pc += m.sa;
+    if (m.w === 'A') { a.v++; b.d++; } else { b.v++; a.d++; }
+  });
+  const h2h = (x, y) => {
+    let s = 0;
+    g.matches.forEach(m => {
+      if (m.ta == null) return;
+      const wi = m.w === 'A' ? m.ta : m.tb, li = m.w === 'A' ? m.tb : m.ta;
+      if (wi === x.i && li === y.i) s--;
+      if (wi === y.i && li === x.i) s++;
+    });
+    return s;
+  };
+  return st.sort((x, y) => y.v - x.v || h2h(x, y) || (y.pp - y.pc) - (x.pp - x.pc) || y.pp - x.pp || x.i - y.i);
+}
+const saldo = t => `${t.pp - t.pc > 0 ? '+' : ''}${t.pp - t.pc}`;
+function teamPodiumHTML(st) {
+  const step = (t, i) => t ? `<div class="step p${i + 1}"><div class="who">${esc(t.name)}</div><div class="rec">${t.v}V ${t.d}D, saldo ${saldo(t)}</div><div class="block">${i + 1}º</div></div>` : '<div class="step"></div>';
+  return `<div class="podium">${step(st[1], 1)}${step(st[0], 0)}${step(st[2], 2)}</div>`;
+}
+function openChampionModal() {
+  const st = standings(G);
+  openModal(`<h2>${esc(G.name)}</h2><p class="hint">Torneio encerrado. Campeão: ${esc(st[0].name)}.</p>${teamPodiumHTML(st)}
+    <p class="meta" style="text-align:center">${esc(G.teams[st[0].i].players.map(i => P(i).name).join(', '))}</p>
+    <button class="btn primary wide" data-act="close" style="margin-top:14px">Fechar</button>`);
+}
+function tNextHint() {
+  const nx = nextFixtures(1);
+  if (!nx.length) return 'Era o último jogo do torneio.';
+  const f = G.fixtures[nx[0]];
+  return `Próximo jogo: ${esc(G.teams[f.a].name)} x ${esc(G.teams[f.b].name)}.`;
+}
+function viewNewT() {
+  const d = draft, n = d.selected.length, k = d.nTeams;
+  const games = k * (k - 1) / 2 * (d.twice ? 2 : 1);
+  if (d.step === 'teams') {
+    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px"><h2 style="margin:0">Times do torneio</h2><button class="btn primary small" data-act="tstart">Iniciar</button></div>
+    <p class="hint">${k} times, ${games} jogos. Toque em Trocar para mudar alguém de time. Os nomes dos times podem ser editados.</p>
+    ${d.teams.map((t, i) => `<div class="tcard">
+      <div class="tcard-head"><input class="input" data-tname="${i}" value="${esc(t.name)}" aria-label="Nome do time ${i + 1}"><span class="meta" style="white-space:nowrap">elo ${Math.round(avgElo(t.players))}</span></div>
+      ${t.players.map(id => `<div class="item">${avatar(id)}<div class="grow"><div class="name">${esc(P(id).name)}</div><div class="meta">Elo ${Math.round(P(id).elo)}</div></div><button class="btn small" data-act="tmovepick" data-id="${id}">Trocar</button></div>`).join('') || '<div class="empty">Sem jogadores</div>'}
+    </div>`).join('')}
+    <div class="row-actions"><button class="btn" data-act="tdraw">${ic('shuffle')}Sortear de novo</button><button class="btn ghost" data-act="tback">Voltar</button></div>
+    <button class="btn primary wide big" data-act="tstart">Iniciar torneio</button>`;
+  }
+  const min = 2 * k;
+  const per = n ? `${Math.floor(n / k)}${n % k ? ' a ' + Math.ceil(n / k) : ''}` : '';
+  return `<h2>Novo torneio</h2>
+  <p class="hint">Times fixos, todos contra todos. As partidas contam no ranking e no elo de cada jogador.</p>
+  <div class="field"><label class="l" for="gname">Nome</label><input class="input" id="gname" data-in="name" value="${esc(d.name)}" placeholder="Torneio de ${fmtDate(Date.now())}"></div>
+  <div class="panel">
+    <div class="field"><span class="lbl">Número de times</span>
+      <div class="stepper"><button data-act="draft-step" data-k="nTeams" data-d="-1" aria-label="Menos times">−</button><output>${k}</output><button data-act="draft-step" data-k="nTeams" data-d="1" aria-label="Mais times">+</button></div>
+      <p class="hint" style="margin-top:8px">${games} jogo${games === 1 ? '' : 's'} no total.</p></div>
+    <div class="field"><span class="lbl">Pontos para vencer</span>
+      <div class="chips">${[11, 15, 21].map(v => `<button class="chip" data-act="draft-set" data-k="maxPoints" data-val="${v}" aria-pressed="${d.maxPoints === v}">${v}</button>`).join('')}</div>
+      <p class="hint" style="margin-top:8px">Sempre com 2 pontos de diferença.</p></div>
+    <div class="field"><label class="toggle"><input type="checkbox" data-chk="draft" data-k="twice" ${d.twice ? 'checked' : ''}> Turno e returno</label>
+      <p class="hint" style="margin-top:6px">Cada time enfrenta os outros duas vezes.</p></div>
+  </div>
+  <div class="shead"><h3>Jogadores</h3><span>${n} marcado${n === 1 ? '' : 's'}${per ? `, ${per} por time` : ''}</span></div>
+  <div class="field"><input class="input" id="dq" data-in="dq" value="${esc(d.q)}" placeholder="Buscar ou cadastrar jogador" autocomplete="off"></div>
+  <div id="picklist">${pickList()}</div>
+  <div class="start-cta"><button class="btn primary wide big" data-act="tdraw" ${n < min ? 'disabled' : ''}>Montar times</button>
+  ${n < min ? `<div class="notice">Marque pelo menos ${min} jogadores para ${k} times.</div>` : ''}</div>`;
+}
+function fixtureRow(i) {
+  const f = G.fixtures[i], A = G.teams[f.a], B = G.teams[f.b];
+  const m = f.done && f.mi != null ? G.matches[f.mi] : null;
+  let right = '';
+  if (m) right = `<span class="tag ${m.w.toLowerCase()}">${m.sa} × ${m.sb}</span>`;
+  else if (i === G.cur && G.status === 'live') right = '<span class="tag live">Em quadra</span>';
+  else if (G.status === 'live' && G.score.A + G.score.B === 0) right = `<button class="btn small" data-act="tplay" data-i="${i}">Jogar agora</button>`;
+  const nm = (t, s) => `<span class="${m ? (m.w === s ? 'fw' : 'fl') : ''}">${esc(t.name)}</span>`;
+  return `<div class="item"><span class="pos">${i + 1}</span><div class="grow"><div class="name fx">${nm(A, 'A')} <span class="meta">x</span> ${nm(B, 'B')}</div></div>${right}</div>`;
+}
+function tabQuadraT() {
+  if (G.status !== 'live') return `<div class="notice">Torneio encerrado. Reabra em Gerenciar para continuar.</div>${tabTabela()}`;
+  if (!curFixture()) return '<div class="notice">Nenhum jogo pendente.</div>';
+  const nx = nextFixtures(3), left = G.fixtures.filter(f => !f.done).length;
+  return `${boardHTML()}
+  <div class="actions">
+    <button class="act" data-act="endmatch">${ic('flag')}Encerrar jogo</button>
+    <button class="act" data-act="undo" ${G.lastUndo ? '' : 'disabled'}>${ic('undo')}Desfazer</button>
+  </div>
+  <div class="shead"><h3>Próximos jogos</h3><span>${left} restante${left === 1 ? '' : 's'}</span></div>
+  <div class="list">${nx.length ? nx.map(fixtureRow).join('') : '<div class="empty">Este é o último jogo do torneio.</div>'}</div>`;
+}
+function tabTabela() {
+  const st = standings(G), done = G.status !== 'live';
+  const played = G.fixtures.filter(f => f.done).length;
+  return `${done && played ? `<h3 style="margin-top:4px">Campeões</h3>${teamPodiumHTML(st)}` : ''}
+  <div class="shead" ${done && played ? '' : 'style="margin-top:4px"'}><h3>Classificação</h3><span>vitórias, confronto direto, saldo</span></div>
+  <div class="list">${st.map((t, k) => `<div class="rk-row"><span class="medal ${k < 3 && played ? 'm' + (k + 1) : ''}">${k + 1}</span>
+    <div class="grow"><div class="name">${esc(t.name)}</div>
+      <div class="meta stats"><span><b>${t.j}</b> jogo${t.j === 1 ? '' : 's'}</span><span><b>${t.v}</b> vitória${t.v === 1 ? '' : 's'}</span><span><b>${t.d}</b> derrota${t.d === 1 ? '' : 's'}</span><span>saldo <b>${saldo(t)}</b></span></div>
+      <div class="meta">${esc(G.teams[t.i].players.map(i => P(i).name).join(', '))}</div></div>
+    <div class="pct">${t.v}<small class="pts">V</small></div></div>`).join('')}</div>
+  <div class="shead"><h3>Jogos</h3><span>${played} de ${G.fixtures.length}</span></div>
+  <div class="list">${G.fixtures.map((f, i) => fixtureRow(i)).join('')}</div>
+  ${done && G.lastUndo ? `<div class="row-actions"><button class="btn" data-act="undo">${ic('undo')}Desfazer último jogo</button></div>` : ''}`;
+}
+function tabGerenciarT() {
+  const f = G.edit || (G.edit = { ...G.cfg });
+  return `<h3 style="margin-top:4px">Nomes dos times</h3>
+  <div class="list">${G.teams.map((t, i) => `<div class="item"><div class="grow"><input class="input" data-gtname="${i}" value="${esc(t.name)}" aria-label="Nome do time ${i + 1}"><div class="meta" style="margin-top:6px">${esc(t.players.map(id => P(id).name).join(', '))}</div></div></div>`).join('')}</div>
+  <h3>Pontos para vencer</h3>
+  <div class="chips">${[11, 15, 21].map(v => `<button class="chip" data-act="edit-set" data-k="maxPoints" data-val="${v}" aria-pressed="${f.maxPoints === v}">${v}</button>`).join('')}</div>
+  <div class="row-actions"><button class="btn primary" data-act="applyfmt">Salvar</button></div>
+  <h3>Torneio</h3>
+  ${G.status === 'live' ? '<button class="btn danger" data-act="closegame">Encerrar torneio</button>' : '<button class="btn" data-act="reopen">Reabrir torneio</button>'}
+  <button class="btn ghost danger" data-act="delgame">Apagar torneio</button>`;
+}
+function openMoveModal(pid) {
+  const from = draft.teams.findIndex(t => t.players.includes(pid));
+  openModal(`<h2>${esc(P(pid).name)}</h2><p class="hint">Troque com alguém de outro time ou só mova para lá.</p>
+    ${draft.teams.map((t, i) => i === from ? '' : `<div class="shead" style="margin:14px 0 6px"><h3 style="font-size:17px">${esc(t.name)}</h3><button class="btn small ghost" data-act="tmove" data-id="${pid}" data-to="${i}">Só mover</button></div>
+    <div class="list">${t.players.map(o => `<button class="pick" data-act="tswap" data-id="${pid}" data-other="${o}">${avatar(o)}<span class="grow"><span class="name" style="display:block">Trocar com ${esc(P(o).name)}</span><span class="meta">Elo ${Math.round(P(o).elo)}</span></span></button>`).join('') || '<div class="empty">Time vazio</div>'}</div>`).join('')}
+    <button class="btn ghost wide" data-act="close" style="margin-top:10px">Cancelar</button>`);
 }
 
 /* ---------- estatísticas ---------- */
@@ -585,7 +825,7 @@ function rankTable(all, showElo, min = MIN_J) {
       ${rk ? `<span class="medal ${rk <= 3 ? 'm' + rk : ''}">${rk}</span>` : ''}
       ${avatar(r.id)}
       <div class="grow"><div class="name">${esc(P(r.id).name)}</div>
-        <div class="meta">${r.v} vitória${r.v === 1 ? '' : 's'}, ${r.d} derrota${r.d === 1 ? '' : 's'}${showElo ? `, elo ${Math.round(P(r.id).elo)}` : ''}</div>
+        <div class="meta stats"><span><b>${r.j}</b> partida${r.j === 1 ? '' : 's'}</span><span><b>${r.v}</b> vitória${r.v === 1 ? '' : 's'}</span><span><b>${r.d}</b> derrota${r.d === 1 ? '' : 's'}</span>${showElo ? `<span>elo <b>${Math.round(P(r.id).elo)}</b></span>` : ''}</div>
         <div class="bar"><i style="width:${pct}%"></i></div></div>
       <div class="pct">${pct}%</div></div>`;
   };
@@ -603,7 +843,8 @@ const ICON = {
   up: '<path d="M12 19V5M5 12l7-7 7 7"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   chev: '<path d="m9 6 6 6-6 6"/>',
-  chevL: '<path d="m15 6-6 6 6 6"/>'
+  chevL: '<path d="m15 6-6 6 6 6"/>',
+  trophy: '<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4zM7 6H4a3 3 0 0 0 3 4M17 6h3a3 3 0 0 1-3 4"/>'
 };
 const ic = n => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`;
 const LOGO = `<svg class="logo" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18" fill="var(--a)"/><path d="M20 2a18 18 0 0 1 0 36z" fill="var(--b)"/><g fill="none" stroke="var(--ink)" stroke-width="2.2"><circle cx="20" cy="20" r="18"/><path d="M20 2c-7 9-7 27 0 36M3.5 14c10 3 23 3 33 0M5 29c9-4 21-4 30 0"/></g></svg>`;
@@ -643,14 +884,15 @@ function viewHome() {
   const done = S.games.filter(g => g.status !== 'live').sort((a, b) => b.createdAt - a.createdAt);
   return `
   <button class="btn primary wide big" data-act="new">${ic('plus')}Nova pelada</button>
+  <button class="btn wide" data-act="newt" style="margin-top:8px">${ic('trophy')}Novo torneio</button>
   ${live.length ? `<div class="shead"><h3>Em andamento</h3></div>${live.map(liveCard).join('')}` : ''}
-  <div class="shead"><h3>Peladas anteriores</h3>${done.length ? `<span>${done.length}</span>` : ''}</div>
+  <div class="shead"><h3>Anteriores</h3>${done.length ? `<span>${done.length}</span>` : ''}</div>
   <div class="list">${done.length ? done.map(gameRow).join('') : '<div class="empty">Quando você encerrar uma pelada, ela fica guardada aqui com o ranking do dia.</div>'}</div>`;
 }
 function liveCard(g) {
   const sc = g.score || { A: 0, B: 0 };
-  return `<div class="livecard" data-act="open" data-id="${g.id}" role="button" tabindex="0">
-    <div class="lc-head"><div class="grow"><span class="tag live">Ao vivo</span><b>${esc(g.name)}</b><span class="meta">${g.players} jogadores, partida ${g.matches + 1}</span></div><span class="lc-go">Continuar${ic('chev')}</span></div>
+  return `<div class="livecard" data-act="open" data-id="${g.id}">
+    <div class="lc-head"><div class="grow"><span class="tag live">${g.type === 'torneio' ? 'Torneio ao vivo' : 'Ao vivo'}</span><b>${esc(g.name)}</b><span class="meta">${g.players} jogadores, ${g.type === 'torneio' ? 'jogo' : 'partida'} ${g.matches + 1}</span></div><button class="btn primary lc-go" data-act="open" data-id="${g.id}">Continuar${ic('chev')}</button></div>
     <div class="lc-score"><div class="a">${sc.A}</div><div class="n net"></div><div class="b">${sc.B}</div></div>
   </div>`;
 }
@@ -659,13 +901,14 @@ function gameRow(g) {
   const mon = d.toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '');
   return `<div class="item clickable" data-act="open" data-id="${g.id}" role="button" tabindex="0">
     <div class="daybox"><b>${d.getDate()}</b><span>${mon}</span></div>
-    <div class="grow"><div class="name">${esc(g.name)}</div><div class="meta">${g.players} jogadores, ${g.matches} partida${g.matches === 1 ? '' : 's'}</div></div>
+    <div class="grow"><div class="name">${esc(g.name)}</div><div class="meta">${g.type === 'torneio' ? 'Torneio, ' : ''}${g.players} jogadores, ${g.matches} partida${g.matches === 1 ? '' : 's'}</div></div>
     ${ic('chev')}
   </div>`;
 }
 /* nova pelada */
 function viewNew() {
   const d = draft;
+  if (d.kind === 'torneio') return viewNewT();
   return `
   <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px"><h2 style="margin:0">Nova pelada</h2><button class="btn primary small" data-act="start" ${d.selected.length < 2 ? 'disabled' : ''}>Iniciar (${d.selected.length})</button></div>
   <div class="field"><label class="l" for="gname">Nome</label><input class="input" id="gname" data-in="name" value="${esc(d.name)}" placeholder="Pelada de ${fmtDate(Date.now())}"></div>
@@ -727,26 +970,27 @@ function viewGame() {
   if (!G) { view = 'home'; return viewHome(); }
   return `
   <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:14px">
-    <div class="grow">${G.status === 'live' ? '<span class="tag live">Ao vivo</span>' : '<span class="tag">Encerrada</span>'}<h2 style="margin:4px 0 0">${esc(G.name)}</h2></div>
+    <div class="grow">${G.status === 'live' ? `<span class="tag live">${isT() ? 'Torneio ao vivo' : 'Ao vivo'}</span>` : `<span class="tag">${isT() ? 'Torneio encerrado' : 'Encerrada'}</span>`}<h2 style="margin:4px 0 0">${esc(G.name)}</h2></div>
   </div>
   <div class="tabs" role="tablist">
     <button data-act="tab" data-v="quadra" aria-current="${gameTab === 'quadra'}">Quadra</button>
-    <button data-act="tab" data-v="gerenciar" aria-current="${gameTab === 'gerenciar'}">Gerenciar</button>
+    ${isT() ? `<button data-act="tab" data-v="tabela" aria-current="${gameTab === 'tabela'}">Tabela</button>` : ''}
     <button data-act="tab" data-v="ranking" aria-current="${gameTab === 'ranking'}">Ranking</button>
+    <button data-act="tab" data-v="gerenciar" aria-current="${gameTab === 'gerenciar'}">${isT() ? 'Ajustes' : 'Gerenciar'}</button>
   </div>
-  ${gameTab === 'quadra' ? tabQuadra() : gameTab === 'gerenciar' ? tabGerenciar() : tabRanking()}`;
+  ${gameTab === 'quadra' ? tabQuadra() : gameTab === 'tabela' && isT() ? tabTabela() : gameTab === 'gerenciar' ? tabGerenciar() : tabRanking()}`;
 }
 function boardHTML() {
   const side = s => `
-    <div class="team ${s.toLowerCase()}" data-act="point" data-t="${s}" role="button" tabindex="0" aria-label="Ponto para o ${TEAM[s]}">
-      <div class="tname">${TEAM[s]}</div>
+    <div class="team ${s.toLowerCase()}" data-act="point" data-t="${s}" role="button" tabindex="0" aria-label="Ponto para ${esc(tName(s))}">
+      <div class="tname">${esc(tName(s))}</div>
       ${G.score.A + G.score.B === 0 && serveSide() === s ? '<div class="serve">🏐 Saca primeiro</div>' : ''}
       <div class="score" id="score-${s}">${G.score[s]}</div>
       <ul>${G.court[s].map(i => `<li>${esc(P(i).name)}${(G.streak || {})[i] ? ` <span class="stk">${G.streak[i]}V seguida${G.streak[i] > 1 ? 's' : ''}</span>` : ''}</li>`).join('') || '<li>Sem jogadores</li>'}</ul>
-      <button class="minus" data-act="minus" data-t="${s}" aria-label="Tirar um ponto do ${TEAM[s]}">−1</button>
+      <button class="minus" data-act="minus" data-t="${s}" aria-label="Tirar um ponto de ${esc(tName(s))}">−1</button>
     </div>`;
   const n = G.cfg.teamSize, t = target(), ext = t > G.cfg.maxPoints;
-  return `<div id="board"><div class="pills"><span class="pill">Partida ${G.matches.length + 1}</span><span class="pill">${n}x${n}</span>${ext ? `<span class="pill hot deuce">Estendido: vai a ${t}</span>` : `<span class="pill">Até ${t}</span>`}</div>
+  return `<div id="board"><div class="pills"><span class="pill">${isT() ? `Jogo ${G.cur + 1} de ${G.fixtures.length}` : `Partida ${G.matches.length + 1}`}</span><span class="pill">${isT() ? `${G.court.A.length}x${G.court.B.length}` : `${n}x${n}`}</span>${ext ? `<span class="pill hot deuce">Estendido: vai a ${t}</span>` : `<span class="pill">Até ${t}</span>`}</div>
   <div class="board">${side('A')}<div class="net" aria-hidden="true"></div>${side('B')}</div>
   ${G.score.A + G.score.B === 0 ? '<p class="taphint">Toque no lado do time para marcar ponto</p>' : ''}</div>`;
 }
@@ -757,6 +1001,7 @@ function renderBoardOnly(bumped) {
   if (bumped) { const el = document.getElementById('score-' + bumped); el && el.classList.add('bump'); }
 }
 function tabQuadra() {
+  if (isT()) return tabQuadraT();
   if (G.status !== 'live') return `<div class="notice">Esta pelada foi encerrada. Reabra em Gerenciar para continuar jogando.</div>${tabRanking()}`;
   return `
   ${boardHTML()}
@@ -772,6 +1017,7 @@ function tabQuadra() {
     ${i > 0 ? `<button class="btn icon ghost" data-act="up" data-id="${id}" aria-label="Subir ${esc(P(id).name)} na fila" title="Subir na fila">${ic('up')}</button>` : ''}</div>`).join('') : '<div class="empty">Sem reservas no momento. Adicione jogadores em Gerenciar.</div>'}</div>`;
 }
 function tabGerenciar() {
+  if (isT()) return tabGerenciarT();
   const f = G.edit || (G.edit = { ...G.cfg });
   const q = norm(mgmtQuery);
   const all = Object.values(S.players).sort((a, b) => norm(a.name).localeCompare(norm(b.name)));
@@ -827,16 +1073,27 @@ function openPodiumModal() {
   if (!rows.length) return;
   openModal(`<h2>${esc(G.name)}</h2><p class="hint">${G.matches.length} partida${G.matches.length === 1 ? '' : 's'} jogada${G.matches.length === 1 ? '' : 's'}. Os cinco melhores por taxa de vitória, com pelo menos ${MIN_J} partidas:</p>${podiumHTML(rows)}<button class="btn primary wide" data-act="close" style="margin-top:14px">Fechar</button>`);
 }
+let histPage = 0;
+const HIST_PER_PAGE = 10;
 function tabRanking() {
   const rows = sortRank(gameStats(G).filter(r => r.j > 0));
-  const last = G.matches.slice(-8).reverse();
+  const n = G.matches.length, pages = Math.max(1, Math.ceil(n / HIST_PER_PAGE));
+  if (histPage > pages - 1) histPage = pages - 1;
+  const hi = n - histPage * HIST_PER_PAGE, lo = Math.max(0, hi - HIST_PER_PAGE);
+  const page = G.matches.slice(lo, hi).map((m, k) => ({ m, num: lo + k + 1 })).reverse();
+  const hora = t => new Date(t).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
   return `${G.status !== 'live' && rows.some(r => r.j >= MIN_J) ? `<h3 style="margin-top:4px">Pódio</h3>${podiumHTML(rows.filter(r => r.j >= MIN_J))}<h3>Classificação completa</h3>` : ''}${rankTable(rows, false)}
-  <h3>Últimas partidas</h3>
-  <div class="list">${last.length ? last.map((m, i) => `
-    <div class="item"><span class="pos">${G.matches.length - i}</span><div class="grow">
-      <div class="name">${m.w === 'A' ? 'Amarelo' : 'Azul'} venceu ${Math.max(m.sa, m.sb)} a ${Math.min(m.sa, m.sb)}</div>
-      <div class="meta">${esc(m.A.map(i => P(i).name).join(', '))} contra ${esc(m.B.map(i => P(i).name).join(', '))}</div></div>
-      <span class="tag ${m.w.toLowerCase()}">${m.sa} × ${m.sb}</span></div>`).join('') : '<div class="empty">Nenhuma partida terminada ainda.</div>'}</div>`;
+  <div class="shead" id="hist"><h3>Histórico de partidas</h3><span>${n} partida${n === 1 ? '' : 's'}</span></div>
+  <div class="list">${page.length ? page.map(({ m, num }) => `
+    <div class="item"><span class="pos">${num}</span><div class="grow">
+      <div class="name">${esc(mLabel(m, m.w))} venceu ${Math.max(m.sa, m.sb)} a ${Math.min(m.sa, m.sb)}</div>
+      <div class="meta"><b style="color:var(--ink)">${esc(mLabel(m, 'A'))}:</b> ${esc(m.A.map(i => P(i).name).join(', '))}</div>
+      <div class="meta"><b style="color:var(--ink)">${esc(mLabel(m, 'B'))}:</b> ${esc(m.B.map(i => P(i).name).join(', '))}</div></div>
+      <div class="hcol"><span class="tag ${m.w.toLowerCase()}">${m.sa} × ${m.sb}</span><span class="meta">${hora(m.t)}</span></div></div>`).join('') : '<div class="empty">Nenhuma partida terminada ainda.</div>'}</div>
+  ${pages > 1 ? `<div class="pager">
+    <button class="btn small" data-act="hpage" data-d="-1" ${histPage === 0 ? 'disabled' : ''}>${ic('chevL')}Recentes</button>
+    <span>Página ${histPage + 1} de ${pages}</span>
+    <button class="btn small" data-act="hpage" data-d="1" ${histPage >= pages - 1 ? 'disabled' : ''}>Antigas${ic('chev')}</button></div>` : ''}`;
 }
 
 /* jogadores e ranking geral */
@@ -934,16 +1191,15 @@ function openWinModal(w) {
   const capTxt = cap.length ? ` ${esc(cap.map(i => P(i).name).join(', '))} ${cap.length > 1 ? 'saem' : 'sai'} pelo limite de ${lim} vitórias seguidas.` : '';
   const sc = `${Math.max(G.score.A, G.score.B)} a ${Math.min(G.score.A, G.score.B)}`;
   openModal(`
-    <div class="win-banner ${w.toLowerCase()}">${TEAM[w]} venceu<small>${sc}: ${esc(G.court[w].map(i => P(i).name).join(', '))}</small></div>
-    <p class="hint">Como seguir para a próxima partida?</p>
-    <button class="choice" data-act="finish" data-w="${w}" data-mode="losers" aria-pressed="${m === 'losers'}"><b>Saem os perdedores e sorteia de novo</b><span>Vencedores ficam, reservas entram, quadra sorteada outra vez.${capTxt}</span></button>
-    <button class="choice" data-act="finish" data-w="${w}" data-mode="all" aria-pressed="${m === 'all'}"><b>Saem todos, entram só reservas</b><span>Os ${G.court.A.length + G.court.B.length} da quadra vão para o fim da fila.</span></button>
-    <button class="btn ghost wide" data-act="wincancel" data-w="${w}">Foi engano, tirar o último ponto</button>`);
+    <div class="win-banner ${w.toLowerCase()}">${esc(tName(w))} venceu<small>${sc}: ${esc(G.court[w].map(i => P(i).name).join(', '))}</small></div>
+    <p class="hint">${isT() ? tNextHint() : m === 'all' ? `Saem todos: os ${G.court.A.length + G.court.B.length} da quadra vão para o fim da fila e entram reservas.` : `Saem os perdedores, reservas entram e a quadra é sorteada de novo.${capTxt}`}</p>
+    <button class="btn primary wide big" data-act="finish" data-w="${w}" data-mode="${m === 'all' ? 'all' : 'losers'}">${isT() ? (nextFixtures(1).length ? 'Próximo jogo' : 'Encerrar torneio') : 'Próxima partida'}</button>
+    <button class="btn ghost wide" data-act="wincancel" data-w="${w}" style="margin-top:6px">Foi engano, tirar o último ponto</button>`);
 }
 function openEndMatchModal() {
   openModal(`<h2>Encerrar partida agora</h2><p class="hint">Escolha quem venceu. O placar atual fica registrado.</p>
-    <div class="split"><button class="btn" style="background:var(--a);color:var(--a-ink);border-color:var(--a)" data-act="pickwin" data-w="A">Amarelo venceu</button>
-    <button class="btn" style="background:var(--b);color:var(--b-ink);border-color:var(--b)" data-act="pickwin" data-w="B">Azul venceu</button></div>
+    <div class="split"><button class="btn" style="background:var(--a);color:var(--a-ink);border-color:var(--a)" data-act="pickwin" data-w="A">${esc(isT() ? tName('A') : 'Amarelo')} venceu</button>
+    <button class="btn" style="background:var(--b);color:var(--b-ink);border-color:var(--b)" data-act="pickwin" data-w="B">${esc(isT() ? tName('B') : 'Azul')} venceu</button></div>
     <button class="btn ghost wide" data-act="close" style="margin-top:8px">Cancelar</button>`);
 }
 let subOut = null;
@@ -995,7 +1251,7 @@ function toast(msg) { const t = document.getElementById('toast'); t.innerHTML = 
 function newDraft() {
   return { name: '', teamSize: 4, maxPoints: 15, winByTwo: false, winMode: 'losers', balance: 70, streakLimit: 3, vary: true, firstPick: 'order', selected: [], q: '' };
 }
-function clampFmt(o) { o.teamSize = Math.min(6, Math.max(2, o.teamSize)); o.maxPoints = Math.min(50, Math.max(3, o.maxPoints)); }
+function clampFmt(o) { o.teamSize = Math.min(6, Math.max(2, o.teamSize)); o.maxPoints = Math.min(50, Math.max(3, o.maxPoints)); if (o.nTeams != null) o.nTeams = Math.min(8, Math.max(2, o.nTeams)); }
 
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]'); if (!el) return;
@@ -1012,8 +1268,22 @@ document.addEventListener('click', e => {
       render(); break;
     }
     case 'new': draft = newDraft(); view = 'new'; render(); break;
+    case 'newt': draft = newTournamentDraft(); view = 'new'; render(); break;
+    case 'tdraw': makeTeams(); render(); window.scrollTo(0, 0); break;
+    case 'tback': draft.step = 'players'; render(); break;
+    case 'tstart': startTournament(); break;
+    case 'tmovepick': openMoveModal(id); break;
+    case 'tmove': { const to = +el.dataset.to; draft.teams.forEach(t => { t.players = t.players.filter(x => x !== id); }); draft.teams[to].players.push(id); closeModal(); render(); break; }
+    case 'tswap': {
+      const o = el.dataset.other;
+      const ta = draft.teams.find(t => t.players.includes(id)), tb = draft.teams.find(t => t.players.includes(o));
+      ta.players = ta.players.map(x => x === id ? o : x); tb.players = tb.players.map(x => x === o ? id : x);
+      closeModal(); render(); break;
+    }
+    case 'tplay': G.cur = +el.dataset.i; setCourtFromFixture(); G.score = { A: 0, B: 0 }; saveGame(); gameTab = 'quadra'; render(); break;
     case 'open': openGame(id); break;
-    case 'tab': gameTab = el.dataset.v; G.edit = null; render(); break;
+    case 'tab': gameTab = el.dataset.v; G.edit = null; histPage = 0; render(); break;
+    case 'hpage': histPage = Math.max(0, histPage + +el.dataset.d); render(); document.getElementById('hist')?.scrollIntoView({ block: 'start' }); break;
     case 'dset': draft[el.dataset.k] = el.dataset.val; render(); break;
     case 'draft-set': case 'edit-set': {
       const o = a === 'draft-set' ? draft : G.edit; const k = el.dataset.k;
@@ -1054,8 +1324,8 @@ document.addEventListener('click', e => {
     case 'madd': addToGame(id); mgmtQuery = ''; render(); break;
     case 'mnew': { const name = mgmtQuery.trim(); if (!name) break; const pid = newPlayer(name); saveMain(); mgmtQuery = ''; addToGame(pid); break; }
     case 'applyfmt': { const f = { ...G.edit }; G.edit = null; applyFormat(f); break; }
-    case 'closegame': confirmBox('Encerrar pelada', 'A pelada sai da lista ao vivo. O ranking fica guardado e você pode reabrir depois.', 'Encerrar', () => { G.status = 'done'; saveGame(); closeModal(); gameTab = 'ranking'; render(); openPodiumModal(); }); break;
-    case 'reopen': G.status = 'live'; saveGame(); gameTab = 'quadra'; render(); break;
+    case 'closegame': confirmBox('Encerrar pelada', 'A pelada sai da lista ao vivo. O ranking fica guardado e você pode reabrir depois.', 'Encerrar', () => { G.status = 'done'; saveGame(); closeModal(); gameTab = isT() ? 'tabela' : 'ranking'; render(); if (isT()) openChampionModal(); else openPodiumModal(); }); break;
+    case 'reopen': G.status = 'live'; if (isT() && !curFixture()) { G.cur = G.fixtures.findIndex(f => !f.done); setCourtFromFixture(); } saveGame(); gameTab = 'quadra'; render(); break;
     case 'delgame': confirmBox('Apagar pelada', 'As partidas desta pelada somem do histórico. O ranking geral e o elo dos jogadores continuam como estão.', 'Apagar', async () => {
       S.games = S.games.filter(g => g.id !== G.id); saveMain();
       try { localStorage.removeItem(LS + 'g_' + G.id); } catch (e) {}
@@ -1119,6 +1389,8 @@ document.addEventListener('keydown', e => {
 });
 document.addEventListener('input', e => {
   const t = e.target;
+  if (t.dataset.tname != null && draft && draft.teams) { draft.teams[+t.dataset.tname].name = t.value; return; }
+  if (t.dataset.gtname != null && G && G.teams) { G.teams[+t.dataset.gtname].name = t.value || 'Time ' + (+t.dataset.gtname + 1); saveGame(); return; }
   if (t.dataset.in === 'name') draft.name = t.value;
   else if (t.dataset.in === 'dq') { draft.q = t.value; document.getElementById('picklist').innerHTML = pickList(); }
   else if (t.dataset.in === 'mq') {
@@ -1137,7 +1409,7 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', e => {
   const t = e.target;
-  if (t.dataset.chk) { const o = t.dataset.chk === 'draft' ? draft : G.edit; o[t.dataset.k] = t.checked; }
+  if (t.dataset.chk) { const o = t.dataset.chk === 'draft' ? draft : G.edit; o[t.dataset.k] = t.checked;  if (t.dataset.k === 'twice') render(); }
 });
 
 /* ---------- início ---------- */
