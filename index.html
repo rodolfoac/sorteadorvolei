@@ -1153,12 +1153,53 @@ function periodStats(from, to) {
   }));
   return { rows: Object.values(st).filter(r => S.players[r.id]), count, games: games.size };
 }
+/* zerar ou recalcular o ranking geral */
+let resetMode = 'recalc', resetElo = false;
+async function fetchAllGames() {
+  const out = {};
+  await Promise.all(S.games.map(async g => { const d = await loadDoc('g_' + g.id); if (d) out[g.id] = d; }));
+  if (G && out[G.id]) out[G.id] = G;
+  return out;
+}
+function openResetModal() {
+  openModal(`<h2>Zerar ranking geral</h2>
+    <p class="hint">Escolha o que fazer com partidas, vitórias e derrotas de todos os jogadores.</p>
+    <button class="choice" data-act="rmode" data-v="recalc" aria-pressed="${resetMode === 'recalc'}"><b>Recalcular com as peladas salvas</b><span>Conta só o que está nas peladas e torneios que existem hoje. Use depois de apagar peladas de teste.</span></button>
+    <button class="choice" data-act="rmode" data-v="zero" aria-pressed="${resetMode === 'zero'}"><b>Zerar tudo</b><span>Todo mundo volta para 0 partidas. As peladas continuam no histórico e nos rankings mensal e anual.</span></button>
+    <label class="toggle" style="margin:12px 0 4px"><input type="checkbox" id="relo" ${resetElo ? 'checked' : ''}> ${resetMode === 'recalc' ? 'Recalcular o elo pelas partidas salvas' : 'Voltar o elo de todos para 1000'}</label>
+    <p class="hint">${resetMode === 'recalc' ? 'O elo é refeito do zero, partida por partida, a partir de 1000. Ajustes manuais de elo são perdidos.' : 'Ajustes manuais de elo são perdidos.'}</p>
+    <div class="split" style="margin-top:10px"><button class="btn" data-act="close">Cancelar</button><button class="btn danger" data-act="rdo">${resetMode === 'recalc' ? 'Recalcular' : 'Zerar'}</button></div>`);
+}
+async function doResetRanking() {
+  const players = Object.values(S.players);
+  players.forEach(p => { p.j = 0; p.v = 0; p.d = 0; if (resetElo) p.elo = 1000; });
+  if (resetMode === 'recalc') {
+    const games = await fetchAllGames();
+    const all = [];
+    Object.values(games).forEach(g => (g.matches || []).forEach(m => all.push(m)));
+    all.sort((a, b) => a.t - b.t);
+    all.forEach(m => {
+      const W = m.w === 'A' ? m.A : m.B, L = m.w === 'A' ? m.B : m.A;
+      if (resetElo) {
+        const exp = 1 / (1 + Math.pow(10, (avgElo(L) - avgElo(W)) / 400)), delta = 24 * (1 - exp);
+        W.forEach(i => { if (S.players[i]) S.players[i].elo += delta; });
+        L.forEach(i => { if (S.players[i]) S.players[i].elo -= delta; });
+      }
+      W.forEach(i => { const p = S.players[i]; if (p) { p.j++; p.v++; } });
+      L.forEach(i => { const p = S.players[i]; if (p) { p.j++; p.d++; } });
+    });
+  }
+  if (G) G.lastUndo = null;
+  saveMain(); closeModal(); allGames = null; render();
+  toast(resetMode === 'recalc' ? 'Ranking geral recalculado.' : 'Ranking geral zerado.');
+}
 function viewRanking() {
   const tabs = `<div class="tabs" role="tablist">${[['mes', 'Mensal'], ['ano', 'Anual'], ['geral', 'Geral']].map(([k, l]) => `<button data-act="rperiod" data-v="${k}" aria-current="${rankPeriod === k}">${l}</button>`).join('')}</div>`;
   const rule = `Ordenado por taxa de vitória. Entra na classificação quem tem pelo menos ${MIN_RANK} partidas.`;
   if (rankPeriod === 'geral') {
     const rows = sortRank(Object.values(S.players).filter(p => p.j > 0).map(p => ({ id: p.id, j: p.j, v: p.v, d: p.d })));
-    return `<h2>Ranking</h2>${tabs}<p class="hint">Soma de todas as peladas desde o começo. ${rule}</p>${rankTable(rows, true, MIN_RANK)}`;
+    return `<h2>Ranking</h2>${tabs}<p class="hint">Soma de todas as peladas desde o começo. ${rule}</p>${rankTable(rows, true, MIN_RANK)}
+    <div class="row-actions" style="margin-top:20px"><button class="btn ghost danger" data-act="rreset">Zerar ranking geral</button></div>`;
   }
   if (!allGames) { loadAllGames(); return `<h2>Ranking</h2>${tabs}<div class="list"><div class="empty">Carregando as partidas…</div></div>`; }
   const { y, m } = rankCursor, mes = rankPeriod === 'mes';
@@ -1267,6 +1308,9 @@ document.addEventListener('click', e => {
       else rankCursor = { ...rankCursor, y: rankCursor.y + d };
       render(); break;
     }
+    case 'rreset': openResetModal(); break;
+    case 'rmode': resetMode = el.dataset.v; openResetModal(); break;
+    case 'rdo': el.disabled = true; doResetRanking(); break;
     case 'new': draft = newDraft(); view = 'new'; render(); break;
     case 'newt': draft = newTournamentDraft(); view = 'new'; render(); break;
     case 'tdraw': makeTeams(); render(); window.scrollTo(0, 0); break;
@@ -1409,6 +1453,7 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', e => {
   const t = e.target;
+  if (t.id === 'relo') resetElo = t.checked;
   if (t.dataset.chk) { const o = t.dataset.chk === 'draft' ? draft : G.edit; o[t.dataset.k] = t.checked;  if (t.dataset.k === 'twice') render(); }
 });
 
